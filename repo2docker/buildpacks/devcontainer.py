@@ -626,6 +626,20 @@ ENV PATH=$VIRTUAL_ENV/bin:$PATH
 
 EXPOSE 8888
 
+# Install openvscode-server for VS Code in browser (must run as root to write to /opt)
+# Using openvscode-server (Gitpod) for better upstream VS Code alignment
+# Note: We query GitHub API to get correct download URL (filename includes version)
+RUN OVSCODE_VERSION=$(curl -sL https://api.github.com/repos/gitpod-io/openvscode-server/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\\1/') && \\
+    curl -fsSL "https://github.com/gitpod-io/openvscode-server/releases/download/${{OVSCODE_VERSION}}/${{OVSCODE_VERSION}}-linux-x64.tar.gz" | \\
+    tar -xz -C /opt && \\
+    mv /opt/openvscode-server-* /opt/openvscode-server && \\
+    chown -R 1000:1000 /opt/openvscode-server
+
+ENV PATH=/opt/openvscode-server/bin:$PATH
+
+# Configure openvscode-server to use Open VSX registry (not Microsoft marketplace)
+ENV OPENVSCODE_SERVER_EXTENSIONS_DIR=/opt/openvscode-server/extensions
+
 # Environment variables from devcontainer.json
 {env_lines}
 # Set working directory
@@ -636,7 +650,7 @@ WORKDIR ${{REPO_DIR}}
 # Copy repository contents
 COPY --chown=1000:1000 . ${{REPO_DIR}}/
 
-# Switch to user for pip installs
+# Switch to user for pip installs and extensions
 USER ${{NB_USER}}
 
 # Install JupyterHub requirements to /opt/venv (not ~/.local which gets bind-mounted)
@@ -647,18 +661,6 @@ RUN pip install --no-cache-dir \\
     jupyterlab \\
     notebook \\
     jupyter-vscode-proxy
-
-# Install openvscode-server for VS Code in browser
-# Using openvscode-server (Gitpod) for better upstream VS Code alignment
-RUN curl -fsSL https://github.com/gitpod-io/openvscode-server/releases/latest/download/openvscode-server-linux-x64.tar.gz | \\
-    tar -xz -C /opt && \\
-    mv /opt/openvscode-server-* /opt/openvscode-server && \\
-    chown -R 1000:1000 /opt/openvscode-server
-
-ENV PATH=/opt/openvscode-server/bin:$PATH
-
-# Configure openvscode-server to use Open VSX registry (not Microsoft marketplace)
-ENV OPENVSCODE_SERVER_EXTENSIONS_DIR=/opt/openvscode-server/extensions
 {extension_cmds}
 
 # Run lifecycle commands from devcontainer.json
