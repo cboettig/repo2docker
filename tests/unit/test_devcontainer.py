@@ -439,3 +439,109 @@ class TestEdgeCases:
         env_dict = dict(build_env)
         assert env_dict.get("DATABASE_URL") == "postgres://user:pass@host:5432/db?sslmode=require"
 
+
+class TestVSCodeExtensions:
+    """Tests for VS Code extension support."""
+
+    def test_parse_vscode_extensions(self, temp_repo, base_image):
+        """Test parsing customizations.vscode.extensions from devcontainer.json."""
+        config = {
+            "image": "python:3.11",
+            "customizations": {
+                "vscode": {
+                    "extensions": [
+                        "ms-python.python",
+                        "charliermarsh.ruff"
+                    ]
+                }
+            }
+        }
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        extensions = bp._get_vscode_extensions()
+        
+        assert "ms-python.python" in extensions
+        assert "charliermarsh.ruff" in extensions
+        assert len(extensions) == 2
+
+    def test_proprietary_extension_warning(self, temp_repo, base_image):
+        """Test that proprietary extensions are flagged with warnings."""
+        config = {"image": "python:3.11"}
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        
+        # Pylance is proprietary
+        mapped_id, warning = bp._map_extension_to_openvsx("ms-python.vscode-pylance")
+        assert mapped_id is None
+        assert "proprietary" in warning.lower()
+
+    def test_regular_extension_passes_through(self, temp_repo, base_image):
+        """Test that regular extensions pass through unchanged."""
+        config = {"image": "python:3.11"}
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        
+        mapped_id, warning = bp._map_extension_to_openvsx("charliermarsh.ruff")
+        assert mapped_id == "charliermarsh.ruff"
+        assert warning is None
+
+    def test_extension_commands_generated(self, temp_repo, base_image):
+        """Test that extension install commands are generated."""
+        config = {
+            "image": "python:3.11",
+            "customizations": {
+                "vscode": {
+                    "extensions": [
+                        "charliermarsh.ruff",
+                        "esbenp.prettier-vscode"
+                    ]
+                }
+            }
+        }
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        bp._devcontainer_config.cache_clear()
+        
+        cmds, warnings = bp._generate_extension_install_commands()
+        
+        assert "openvscode-server --install-extension charliermarsh.ruff" in cmds
+        assert "openvscode-server --install-extension esbenp.prettier-vscode" in cmds
+
+    def test_standalone_dockerfile_includes_openvscode_server(self, temp_repo, base_image):
+        """Test that render_standalone includes openvscode-server installation."""
+        config = {"image": "python:3.11"}
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        dockerfile = bp.render_standalone()
+        
+        # Should install openvscode-server
+        assert "openvscode-server" in dockerfile
+        # Should install jupyter-vscode-proxy
+        assert "jupyter-vscode-proxy" in dockerfile
+        # Should have Debian note
+        assert "Debian/Ubuntu" in dockerfile
+
+    def test_no_extensions_no_commands(self, temp_repo, base_image):
+        """Test that no extension commands are generated when none specified."""
+        config = {"image": "python:3.11"}
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        
+        cmds, warnings = bp._generate_extension_install_commands()
+        
+        assert cmds == ""
+        assert warnings == []
+
+

@@ -415,6 +415,98 @@ class DevContainerBuildPack(BuildPack):
 
         return scripts
 
+    # Known proprietary extensions not available on Open VSX
+    PROPRIETARY_EXTENSIONS = {
+        "ms-python.vscode-pylance",
+        "ms-vscode.cpptools",
+        "ms-dotnettools.csharp",
+        "ms-vscode-remote.remote-ssh",
+        "ms-vscode-remote.remote-containers",
+        "ms-vscode-remote.remote-wsl",
+        "github.copilot",
+        "github.copilot-chat",
+    }
+
+    # Extension ID mappings from devcontainer.json to Open VSX
+    # Most extensions use the same ID, but some differ
+    EXTENSION_MAPPINGS = {
+        # Add any known mappings here if publishers differ on Open VSX
+    }
+
+    def _get_vscode_extensions(self):
+        """
+        Extract VS Code extensions from devcontainer.json.
+        
+        Supports the customizations.vscode.extensions property per the
+        Dev Container specification.
+        
+        Returns:
+            list: List of extension IDs to install
+        """
+        config = self._devcontainer_config()
+        customizations = config.get("customizations", {})
+        vscode = customizations.get("vscode", {})
+        return vscode.get("extensions", [])
+
+    def _map_extension_to_openvsx(self, extension_id):
+        """
+        Map a VS Code extension ID to its Open VSX equivalent.
+        
+        Args:
+            extension_id: The extension ID from devcontainer.json
+            
+        Returns:
+            tuple: (mapped_id, warning_message or None)
+        """
+        # Check if it's a known proprietary extension
+        if extension_id in self.PROPRIETARY_EXTENSIONS:
+            return None, f"Extension '{extension_id}' is proprietary and not available on Open VSX"
+        
+        # Check if we have a specific mapping
+        if extension_id in self.EXTENSION_MAPPINGS:
+            mapped_id = self.EXTENSION_MAPPINGS[extension_id]
+            return mapped_id, f"Extension '{extension_id}' mapped to '{mapped_id}' for Open VSX"
+        
+        # Most extensions use the same ID on Open VSX
+        return extension_id, None
+
+    def _generate_extension_install_commands(self):
+        """
+        Generate Dockerfile RUN commands to install VS Code extensions.
+        
+        Returns:
+            tuple: (dockerfile_commands, warnings)
+        """
+        extensions = self._get_vscode_extensions()
+        if not extensions:
+            return "", []
+        
+        warnings = []
+        valid_extensions = []
+        
+        for ext in extensions:
+            mapped_id, warning = self._map_extension_to_openvsx(ext)
+            if warning:
+                warnings.append(warning)
+            if mapped_id:
+                valid_extensions.append(mapped_id)
+        
+        if not valid_extensions:
+            return "", warnings
+        
+        # Generate installation commands
+        install_cmds = " && \\\n    ".join(
+            f"openvscode-server --install-extension {ext}" 
+            for ext in valid_extensions
+        )
+        
+        dockerfile_cmds = f"""
+# Install VS Code extensions from Open VSX registry
+# Note: Extensions are sourced from https://open-vsx.org (not Microsoft marketplace)
+RUN {install_cmds}
+"""
+        return dockerfile_cmds, warnings
+
     def render_standalone(self, build_args=None):
         """
         Render a standalone Dockerfile that works without repo2docker infrastructure.
@@ -459,7 +551,19 @@ class DevContainerBuildPack(BuildPack):
             if cmd:
                 lifecycle_cmds += f"RUN {cmd}\n\n"
 
+        # Generate VS Code extension installation commands
+        extension_cmds, extension_warnings = self._generate_extension_install_commands()
+        
+        # Print warnings about extension mappings/unavailability
+        for warning in extension_warnings:
+            print(f"Warning: {warning}")
+
         dockerfile = f'''FROM {base_image}
+
+# =============================================================================
+# NOTE: This Dockerfile assumes a Debian/Ubuntu-based image with apt-get.
+# Alpine (apk), RHEL (yum/dnf), or other distros will require modifications.
+# =============================================================================
 
 # Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
@@ -537,10 +641,25 @@ USER ${{NB_USER}}
 
 # Install JupyterHub requirements to /opt/venv (not ~/.local which gets bind-mounted)
 # jupyterhub provides jupyterhub-singleuser which is REQUIRED for JupyterHub
+# jupyter-vscode-proxy enables VS Code (openvscode-server) in JupyterHub
 RUN pip install --no-cache-dir \\
     jupyterhub \\
     jupyterlab \\
-    notebook
+    notebook \\
+    jupyter-vscode-proxy
+
+# Install openvscode-server for VS Code in browser
+# Using openvscode-server (Gitpod) for better upstream VS Code alignment
+RUN curl -fsSL https://github.com/gitpod-io/openvscode-server/releases/latest/download/openvscode-server-linux-x64.tar.gz | \\
+    tar -xz -C /opt && \\
+    mv /opt/openvscode-server-* /opt/openvscode-server && \\
+    chown -R 1000:1000 /opt/openvscode-server
+
+ENV PATH=/opt/openvscode-server/bin:$PATH
+
+# Configure openvscode-server to use Open VSX registry (not Microsoft marketplace)
+ENV OPENVSCODE_SERVER_EXTENSIONS_DIR=/opt/openvscode-server/extensions
+{extension_cmds}
 
 # Run lifecycle commands from devcontainer.json
 {lifecycle_cmds}
