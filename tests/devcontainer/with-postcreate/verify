@@ -1,0 +1,9 @@
+#!/bin/bash
+# Verify postCreateCommand ran
+[ -f /tmp/post_create_marker ] || exit 1
+grep -q "post_create_ran" /tmp/post_create_marker || exit 1
+
+# Verify JupyterLab is installed
+python3 -c "import jupyterlab" || exit 1
+
+echo "postCreateCommand verification passed"

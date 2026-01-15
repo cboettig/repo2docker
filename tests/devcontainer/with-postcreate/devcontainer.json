@@ -1,0 +1,4 @@
+{
+    "image": "python:3.11-slim",
+    "postCreateCommand": "echo 'post_create_ran' > /tmp/post_create_marker"
+}

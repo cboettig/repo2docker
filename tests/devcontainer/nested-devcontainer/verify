@@ -1,0 +1,5 @@
+#!/bin/bash
+# Verify JupyterLab is installed (nested devcontainer test)
+python3 -c "import jupyterlab" || exit 1
+jupyter --version || exit 1
+echo "Nested devcontainer verification passed"

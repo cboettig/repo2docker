@@ -283,6 +283,19 @@ def get_argparser():
         help=Repo2Docker.engine.help,
     )
 
+    argparser.add_argument(
+        "--write-dockerfile",
+        dest="write_dockerfile",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write the generated Dockerfile to the specified path and exit. "
+            "This allows using the generated Dockerfile with standard repo2docker/BinderHub "
+            "without needing this fork. Use 'Dockerfile' to write to the repo root."
+        ),
+    )
+
     return argparser
 
 
@@ -466,12 +479,86 @@ def make_r2d(argv=None):
     if args.target_repo_dir:
         r2d.target_repo_dir = args.target_repo_dir
 
-    return r2d
+    return r2d, args
+
+
+def write_dockerfile_to_path(r2d, output_path, repo_path):
+    """
+    Generate and write the Dockerfile to the specified path.
+
+    This allows users to materialize the Dockerfile that repo2docker
+    would generate, enabling use with standard BinderHub installations
+    without requiring this fork.
+
+    Args:
+        r2d: The Repo2Docker instance
+        output_path: Path to write the Dockerfile to
+        repo_path: Path to the repository (for resolving relative paths)
+    """
+    from .utils import chdir
+
+    # Determine absolute output path
+    if not os.path.isabs(output_path):
+        output_path = os.path.join(repo_path, output_path)
+
+    with chdir(repo_path):
+        # Find the appropriate buildpack
+        for BP in r2d.buildpacks:
+            bp = BP(base_image=r2d.base_image)
+            if bp.detect():
+                picked_buildpack = bp
+                break
+        else:
+            picked_buildpack = r2d.default_buildpack(base_image=r2d.base_image)
+
+        # Generate build args
+        build_args = {
+            "NB_USER": r2d.user_name,
+            "NB_UID": str(r2d.user_id),
+        }
+        if r2d.target_repo_dir:
+            build_args["REPO_DIR"] = r2d.target_repo_dir
+
+        # Render the Dockerfile
+        # Use render_standalone if available (DevContainerBuildPack) for self-contained output
+        if hasattr(picked_buildpack, 'render_standalone'):
+            dockerfile_content = picked_buildpack.render_standalone(build_args)
+        else:
+            dockerfile_content = picked_buildpack.render(build_args)
+
+    # Write to file
+    with open(output_path, "w") as f:
+        f.write(dockerfile_content)
+
+    return output_path, picked_buildpack.__class__.__name__
 
 
 def main():
-    r2d = make_r2d()
+    r2d, args = make_r2d()
     r2d.initialize()
+
+    # Handle --write-dockerfile: generate Dockerfile and exit
+    if args.write_dockerfile:
+        repo_path = os.path.abspath(r2d.repo)
+        if not os.path.isdir(repo_path):
+            print(f"Error: {repo_path} is not a directory. --write-dockerfile requires a local repository.")
+            sys.exit(1)
+
+        try:
+            output_path, buildpack_name = write_dockerfile_to_path(
+                r2d, args.write_dockerfile, repo_path
+            )
+            print(f"Generated Dockerfile using {buildpack_name}")
+            print(f"Written to: {output_path}")
+            print("\nYou can now commit this Dockerfile and use it with standard BinderHub.")
+        except Exception as e:
+            print(f"Error generating Dockerfile: {e}")
+            if r2d.log_level == logging.DEBUG:
+                import traceback
+                traceback.print_exc()
+            sys.exit(1)
+        sys.exit(0)
+
     try:
         r2d.start()
     except BuildError as e:
@@ -497,3 +584,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

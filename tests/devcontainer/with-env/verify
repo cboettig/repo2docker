@@ -1,0 +1,9 @@
+#!/bin/bash
+# Verify environment variables are set
+[ "$MY_CUSTOM_VAR" = "hello_from_devcontainer" ] || exit 1
+[ "$ANOTHER_VAR" = "test_value" ] || exit 1
+
+# Verify JupyterLab is installed
+python3 -c "import jupyterlab" || exit 1
+
+echo "Environment variable verification passed"

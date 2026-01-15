@@ -1,0 +1,7 @@
+{
+    "image": "python:3.11-slim",
+    "containerEnv": {
+        "MY_CUSTOM_VAR": "hello_from_devcontainer",
+        "ANOTHER_VAR": "test_value"
+    }
+}
