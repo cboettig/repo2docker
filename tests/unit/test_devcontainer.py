@@ -246,3 +246,196 @@ class TestDevContainerDockerfile:
         bp = DevContainerBuildPack(base_image)
         path = bp._get_dockerfile_path()
         assert "Dockerfile" in path
+
+
+class TestJupyterHubCompatibility:
+    """
+    Tests for JupyterHub compatibility requirements.
+    
+    These tests verify the three critical "gotchas" for JupyterHub:
+    1. jupyterhub-singleuser must be installed and on PATH
+    2. User must have UID 1000
+    3. Packages must be installed to /opt/venv (not /home which gets bind-mounted)
+    """
+
+    def test_standalone_dockerfile_installs_jupyterhub(self, temp_repo, base_image):
+        """Test that render_standalone installs jupyterhub package (provides jupyterhub-singleuser)."""
+        config = {"image": "python:3.11"}
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        dockerfile = bp.render_standalone()
+        
+        # Must install jupyterhub (not just jupyterlab)
+        assert "jupyterhub" in dockerfile.lower()
+        # CMD should use jupyterhub-singleuser
+        assert "jupyterhub-singleuser" in dockerfile
+
+    def test_standalone_dockerfile_uses_uid_1000(self, temp_repo, base_image):
+        """Test that user is created with UID 1000 (required by JupyterHub)."""
+        config = {"image": "python:3.11"}
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        dockerfile = bp.render_standalone()
+        
+        # Must use UID 1000
+        assert "NB_UID=1000" in dockerfile
+        assert "--uid 1000" in dockerfile
+        assert "--gid 1000" in dockerfile
+
+    def test_standalone_dockerfile_installs_to_opt_venv(self, temp_repo, base_image):
+        """
+        Test that packages install to /opt/venv, NOT ~/.local.
+        
+        JupyterHub bind-mounts /home/jovyan, so anything in ~/.local/bin
+        gets wiped at runtime. We must install to /opt/venv instead.
+        """
+        config = {"image": "python:3.11"}
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        dockerfile = bp.render_standalone()
+        
+        # Must create virtualenv in /opt
+        assert "VIRTUAL_ENV=/opt/venv" in dockerfile
+        # Must add /opt/venv/bin to PATH
+        assert "$VIRTUAL_ENV/bin" in dockerfile
+        # PATH must include venv bin directory
+        assert "PATH=$VIRTUAL_ENV/bin" in dockerfile
+
+    def test_standalone_dockerfile_chowns_opt_venv(self, temp_repo, base_image):
+        """Test that /opt/venv is owned by UID 1000 so user can write to it."""
+        config = {"image": "python:3.11"}
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        dockerfile = bp.render_standalone()
+        
+        # Must chown the venv to user 1000
+        assert "chown -R 1000:1000 $VIRTUAL_ENV" in dockerfile
+
+    def test_standalone_dockerfile_copies_repo_with_correct_ownership(self, temp_repo, base_image):
+        """Test that repository files are copied with UID 1000 ownership."""
+        config = {"image": "python:3.11"}
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        dockerfile = bp.render_standalone()
+        
+        # Must COPY with correct ownership
+        assert "COPY --chown=1000:1000" in dockerfile
+
+    def test_standalone_dockerfile_exposes_port_8888(self, temp_repo, base_image):
+        """Test that port 8888 is exposed for JupyterHub."""
+        config = {"image": "python:3.11"}
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        dockerfile = bp.render_standalone()
+        
+        assert "EXPOSE 8888" in dockerfile
+
+
+class TestBuildArgsSupport:
+    """Tests for build.args support in devcontainer.json."""
+
+    def test_build_args_parsed(self, temp_repo, base_image):
+        """Test that build.args are parsed from devcontainer.json."""
+        config = {
+            "build": {
+                "dockerfile": "Dockerfile",
+                "args": {
+                    "MY_ARG": "my_value",
+                    "ANOTHER_ARG": "another_value"
+                }
+            }
+        }
+        os.makedirs(".devcontainer")
+        with open(".devcontainer/devcontainer.json", "w") as f:
+            json.dump(config, f)
+        with open(".devcontainer/Dockerfile", "w") as f:
+            f.write("FROM python:3.11\n")
+
+        bp = DevContainerBuildPack(base_image)
+        parsed_config = bp._devcontainer_config()
+        assert parsed_config["build"]["args"]["MY_ARG"] == "my_value"
+
+
+class TestEdgeCases:
+    """Tests for edge cases and error handling."""
+
+    def test_empty_devcontainer_json(self, temp_repo, base_image):
+        """Test handling of empty devcontainer.json (uses default image)."""
+        with open("devcontainer.json", "w") as f:
+            json.dump({}, f)
+
+        bp = DevContainerBuildPack(base_image)
+        assert bp.detect() is True
+        # Should fall back to base image
+        assert bp._get_base_image() == base_image
+
+    def test_respects_custom_image(self, temp_repo, base_image):
+        """Test that any user-specified image is respected."""
+        # Test with various real-world base images
+        test_images = [
+            "mcr.microsoft.com/devcontainers/python:3.11",
+            "nvidia/cuda:12.0-devel-ubuntu22.04",
+            "rocker/rstudio:latest",
+            "continuumio/miniconda3",
+            "ghcr.io/prefix-dev/pixi:latest",
+        ]
+        
+        for image in test_images:
+            config = {"image": image}
+            with open("devcontainer.json", "w") as f:
+                json.dump(config, f)
+
+            bp = DevContainerBuildPack(base_image)
+            # Clear cache
+            bp._devcontainer_config.cache_clear()
+            bp._get_base_image.cache_clear()
+            
+            assert bp._get_base_image() == image, f"Failed for image: {image}"
+
+    def test_lifecycle_command_with_special_characters(self, temp_repo, base_image):
+        """Test lifecycle commands with shell special characters."""
+        config = {
+            "image": "python:3.11",
+            "postCreateCommand": "echo 'hello $USER' && pip install --upgrade pip"
+        }
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        dockerfile = bp.render_standalone()
+        
+        # Command should be included
+        assert "echo 'hello $USER'" in dockerfile
+
+    def test_container_env_with_equals_sign(self, temp_repo, base_image):
+        """Test containerEnv with values containing equals signs."""
+        config = {
+            "image": "python:3.11",
+            "containerEnv": {
+                "DATABASE_URL": "postgres://user:pass@host:5432/db?sslmode=require"
+            }
+        }
+        with open("devcontainer.json", "w") as f:
+            json.dump(config, f)
+
+        bp = DevContainerBuildPack(base_image)
+        # Clear cache from previous tests
+        bp._devcontainer_config.cache_clear()
+        bp.get_build_env.cache_clear()
+        
+        build_env = bp.get_build_env()
+        env_dict = dict(build_env)
+        assert env_dict.get("DATABASE_URL") == "postgres://user:pass@host:5432/db?sslmode=require"
+

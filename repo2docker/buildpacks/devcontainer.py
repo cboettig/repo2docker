@@ -84,13 +84,70 @@ class DevContainerBuildPack(BuildPack):
             return {}
 
         with open(config_path) as f:
-            # Handle JSON with comments (JSONC) - strip // comments
+            # Handle JSON with comments (JSONC) - strip comments safely
             content = f.read()
-            # Remove single-line comments
-            content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
-            # Remove multi-line comments
-            content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+            content = self._strip_jsonc_comments(content)
             return json.loads(content)
+
+    def _strip_jsonc_comments(self, content):
+        """
+        Strip JSONC comments while respecting quoted strings.
+        
+        Simple regex like `//.*$` incorrectly strips // inside strings (like URLs).
+        This method properly handles:
+        - Single-line comments: // comment
+        - Multi-line comments: /* comment */
+        - Strings containing // or /* (e.g., URLs)
+        """
+        result = []
+        i = 0
+        in_string = False
+        escape_next = False
+        
+        while i < len(content):
+            char = content[i]
+            
+            if escape_next:
+                result.append(char)
+                escape_next = False
+                i += 1
+                continue
+            
+            if char == '\\' and in_string:
+                result.append(char)
+                escape_next = True
+                i += 1
+                continue
+            
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                result.append(char)
+                i += 1
+                continue
+            
+            if not in_string:
+                # Check for single-line comment
+                if content[i:i+2] == '//':
+                    # Skip until end of line
+                    while i < len(content) and content[i] != '\n':
+                        i += 1
+                    continue
+                
+                # Check for multi-line comment
+                if content[i:i+2] == '/*':
+                    # Skip until */
+                    i += 2
+                    while i < len(content) - 1:
+                        if content[i:i+2] == '*/':
+                            i += 2
+                            break
+                        i += 1
+                    continue
+            
+            result.append(char)
+            i += 1
+        
+        return ''.join(result)
 
     @lru_cache
     def _devcontainer_dir(self):
